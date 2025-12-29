@@ -2,7 +2,7 @@ import json
 import re
 import os
 
-INPUT_FILE = 'lyrics_dataset_final.json'
+INPUT_FILE = 'lyrics_dataset.json'
 OUTPUT_FILE = 'lyrics_dataset_clean.json'
 
 def remove_artist_from_prompt(prompt_text):
