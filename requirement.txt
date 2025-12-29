@@ -1,0 +1,4 @@
+lyricsgenius
+requests
+beautifulsoup4
+undetected-chromedriver
