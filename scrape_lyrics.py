@@ -8,13 +8,14 @@ from bs4 import BeautifulSoup
 import undetected_chromedriver as uc 
 
 GENIUS_TOKEN = "LFP9Sx7dySmRjOZ9PKKbVK-znlIDKnP2PQT_x8dQyGggV32trYkS82xHQEC09Cxg"
-MAX_SONGS_PER_ARTIST = 50
+MAX_SONGS_PER_ARTIST = 100
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 INPUT_FILE = os.path.join(BASE_DIR, 'vietnamese_artists.json')
 OUTPUT_FILE = os.path.join(BASE_DIR, 'lyrics_dataset.json') 
 HISTORY_FILE = os.path.join(BASE_DIR, 'history_log.json')    
 
+# Khởi tạo Chrome Stealth để vượt captcha chặn bot của Genius
 options = uc.ChromeOptions()
 options.add_argument("--disable-popup-blocking") 
 
@@ -31,10 +32,12 @@ driver.get("https://genius.com")
 input("Thấy trang chủ Genius hiện ra bấm ENTER")
 print("\nĐã vượt. Bắt đầu cào...")
 
+# Khởi tạo Genius API
 genius = lyricsgenius.Genius(GENIUS_TOKEN)
 genius.verbose = False
 genius.skip_non_songs = True
 
+# Load và Save .json
 def load_json(filename):
     if os.path.exists(filename):
         try:
@@ -49,6 +52,9 @@ def save_json(data, filename):
         json.dump(data, f, ensure_ascii=False, indent=4)
 
 def manual_search_artist_id(artist_name):
+    """
+    Tìm artist_id từ tên nghệ sĩ
+    """
     url = "https://api.genius.com/search"
     headers = {"Authorization": f"Bearer {GENIUS_TOKEN}"}
     params = {"q": artist_name}
@@ -63,6 +69,10 @@ def manual_search_artist_id(artist_name):
     return None, None
 
 def get_lyrics_and_tags_stealth(song_url):
+    """
+    Mở trang bài hát bằng Chrome Selenium,
+    parse lyrics + tags bằng BeautifulSoup
+    """
     try:
         driver.get(song_url)
         driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
@@ -70,6 +80,7 @@ def get_lyrics_and_tags_stealth(song_url):
         
         soup = BeautifulSoup(driver.page_source, 'html.parser')
         
+        # Tìm container chứa lyrics
         lyrics_divs = soup.find_all('div', attrs={'data-lyrics-container': 'true'})
         if not lyrics_divs:
             lyrics_divs = soup.find_all('div', class_=lambda x: x and x.startswith('Lyrics__Container'))
@@ -84,12 +95,14 @@ def get_lyrics_and_tags_stealth(song_url):
             
             raw_text = "\n".join(text_parts).strip()
             
+            # Xóa header rác Genius tự chèn
             raw_text = re.sub(r"^.*?Lyrics\s*", "", raw_text, flags=re.IGNORECASE | re.DOTALL)
             raw_text = re.sub(r"\d+\s*Contributors?\s*", "", raw_text, flags=re.IGNORECASE)
             raw_text = re.sub(r"\[.*?(?:Lời bài hát|Lyrics).*?\]\s*", "", raw_text, flags=re.IGNORECASE | re.DOTALL)
             
             final_lyrics = raw_text.strip()
-
+        
+        # Lấy tág
         found_tags = []
         try:
             tag_links = soup.find_all('a', href=re.compile(r'/tags/'))
@@ -117,6 +130,7 @@ def main():
     all_songs_dataset = load_json(OUTPUT_FILE)
     history_log = load_json(HISTORY_FILE)
     
+    # Set URL đã xử lý để tránh cào trùng
     processed_urls = set(item['url'] for item in history_log if 'url' in item)
     
     print(f"Đã load {len(all_songs_dataset)} mẫu dataset.")
@@ -126,6 +140,7 @@ def main():
         for name in artists_list:
             print(f"\n--- Đang xử lý: {name} ---")
             
+            # Tìm artist_id
             artist_id, official_name = manual_search_artist_id(name)
             if not artist_id:
                 print("Không tìm thấy ID.")
@@ -134,30 +149,50 @@ def main():
             print(f"ID: {artist_id}. Lấy list nhạc...")
             
             try:
-                artist_obj = genius.artist_songs(artist_id, sort='popularity', per_page=MAX_SONGS_PER_ARTIST, page=1)
-                
                 songs_list = []
-                if isinstance(artist_obj, dict) and 'songs' in artist_obj:
-                    songs_list = artist_obj['songs']
-                elif hasattr(artist_obj, 'songs'):
-                    songs_list = artist_obj.songs
+                page = 1
+                
+                # Lấy danh sách bài hát qua API
+                while len(songs_list) < MAX_SONGS_PER_ARTIST:
+                    print(f"   -> Đang lấy danh sách trang {page}...")
+                    res = genius.artist_songs(artist_id, sort='popularity', per_page=50, page=page)
+                    
+                    if isinstance(res, dict) and 'songs' in res:
+                        batch = res['songs']
+                    elif hasattr(res, 'songs'):
+                        batch = res.songs
+                    else:
+                        batch = []
 
-                print(f"Tìm thấy {len(songs_list)} bài. Bắt đầu lọc & tải...")
+                    if not batch:
+                        print("      (Hết bài hát để lấy)")
+                        break
+                        
+                    songs_list.extend(batch)
+                    page += 1
+                
+                songs_list = songs_list[:MAX_SONGS_PER_ARTIST]
+
+                print(f"   -> Tổng cộng tìm thấy {len(songs_list)} bài. Bắt đầu lọc & tải...")
                 
                 new_count = 0
                 for song in songs_list:
+                    
+                    # Chuẩn hóa object song
                     if isinstance(song, dict):
                         url = song.get('url')
                         title = song.get('title')
                     else:
                         url = song.url
                         title = song.title
-                    
+                        
+                    # Bỏ qua nếu đã cào rồi
                     if url in processed_urls:
                         print(f"Đã có: {title}")
                         continue
                     # -------------------------------
 
+                    # Cào lyrics thật
                     lyrics, scraped_tags = get_lyrics_and_tags_stealth(url)
                     
                     if lyrics and len(lyrics) > 20: 
@@ -197,7 +232,7 @@ def main():
         if all_songs_dataset:
             save_json(all_songs_dataset, OUTPUT_FILE)
             save_json(history_log, HISTORY_FILE)
-            print(f"\n💾 TỔNG KẾT: {len(all_songs_dataset)} MẪU.")
+            print(f"\nTỔNG KẾT: {len(all_songs_dataset)} MẪU.")
         
         print("Đang đóng trình duyệt...")
         driver.quit()
